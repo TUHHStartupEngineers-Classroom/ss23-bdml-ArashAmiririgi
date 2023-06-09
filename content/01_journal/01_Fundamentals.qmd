@@ -3,7 +3,70 @@ title: "Machine Learning Fundamentals"
 author: "Arash Amiririgi"
 ---
 
-::: callout-note
-You can delete everything in here and start fresh.
-:::
+**Challenge:**
 
+Your organization wants to know which companies are similar to each other to help in identifying potential customers of a SAAS software solution (e.g. Sales force CRM or equivalent) in various segments of the market. The Sales Department is very interested in this analysis, which will help them more easily penetrate various market segments.
+
+*Code:*
+
+```{r}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    message = FALSE,
+    warning = FALSE)
+
+library(tidyverse)
+library(tidyquant)
+library(broom)
+library(umap)
+sp_500_prices_tbl <- read_rds("sp_500_prices_tbl.rds")
+sp_500_prices_tbl
+sp_500_index_tbl <- read_rds("sp_500_index_tbl.rds")
+sp_500_index_tbl
+
+## Step 1 - Convert stock prices to a standardized format (daily returns)
+sp_500_daily_returns_tbl <- sp_500_prices_tbl %>% select(symbol,date, adjusted) %>% filter(year(date) >= '2018') %>% group_by(symbol) %>%
+  mutate(lag = lag(adjusted, n = 1)) %>% filter(!(is.na(lag))) %>% mutate(pct_return = (adjusted - lag)/lag) %>%
+  select(symbol, date, pct_return)
+sp_500_daily_returns_tbl
+
+## Step 2 - Convert to User-Item Format
+sp_500_daily_returns_tbl <- read_rds("sp_500_daily_returns_tbl.rds")
+sp_500_daily_returns_tbl
+stock_date_matrix_tbl <- sp_500_daily_returns_tbl %>% pivot_wider(names_from = date, values_from = pct_return, values_fill = 0)
+stock_date_matrix_tbl
+
+## Step 3 - Perform K-Means Clustering
+stock_date_matrix_tbl <- read_rds("stock_date_matrix_tbl.rds")
+kmeans_obj <- stock_date_matrix_tbl %>% select(-symbol) %>% kmeans(centers = 4, nstart = 20)
+
+## Step 4 - Find the optimal value of K
+kmeans_mapper <- function(center = 3) {
+    stock_date_matrix_tbl %>%
+        select(-symbol) %>%
+        kmeans(centers = center, nstart = 20)}
+k_means_mapped_tbl <- tibble(centers = 1:30) %>%
+    mutate(k_means = centers %>% map(kmeans_mapper)) %>%
+    mutate(glance  = k_means %>% map(glance))
+k_means_mapped_tbl
+k_means_mapped_tbl %>% unnest(glance) %>% select(centers, tot.withinss) %>%  ggplot(aes(centers, tot.withinss)) +
+    geom_point(color = "blue", size = 4) +
+    geom_line(color = "blue", size = 1) +
+    ggrepel::geom_label_repel(aes(label = centers), color = "blue")
+
+## Step 5 - Apply UMAP
+k_means_mapped_tbl <- read_rds("k_means_mapped_tbl.rds")
+umap_results <- stock_date_matrix_tbl %>% select(-symbol) %>% umap()
+umap_results
+umap_results_tbl <- umap_results$layou %>% as_tibble() %>% set_names(c("x", "y")) %>% bind_cols(stock_date_matrix_tbl %>% select(symbol))
+umap_results_tbl
+umap_results_tbl %>% ggplot(aes(x, y)) + geom_point(alpha = 0.5) + theme_tq() + labs(title = "UMAP Projection")
+
+## Step 6 - Combine K-Means and UMAP
+k_means_mapped_tbl <- read_rds("k_means_mapped_tbl.rds")
+umap_results_tbl   <- read_rds("umap_results_tbl.rds")
+k_means_obj <- k_means_mapped_tbl %>% pull(k_means) %>% pluck(10)
+umap_kmeans_results_tbl <- k_means_obj %>% augment(stock_date_matrix_tbl) %>% select(symbol, .cluster) %>% left_join(umap_results_tbl) %>% left_join(sp_500_index_tbl %>% select(symbol, company, sector))
+umap_kmeans_results_tbl
+umap_kmeans_results_tbl %>% ggplot(aes(V1, V2, color = .cluster)) + geom_point(alpha = 0.5)
+```
