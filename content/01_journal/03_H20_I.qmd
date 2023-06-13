@@ -3,6 +3,313 @@ title: "Automated Machine Learning with H20 (I)"
 author: "Arash Amiririgi"
 ---
 
-::: callout-note
-You can delete everything in here and start fresh.
-:::
+**Challenge:**
+IBM has gathered information on employee satisfaction, income, seniority and some demographics. It includes the data of 1470 employees. In this regard, we are going to answer several questions based on the visualizations.
+
+
+*Code:*
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message=FALSE,warning=FALSE, cache=TRUE)
+```
+# Business & Data Understanding: Department and Job Role
+```{r message=FALSE, warning=FALSE}
+library(tidymodels)
+library(tidyverse)
+library(magrittr)
+library(dplyr)
+library(sjmisc)
+library(magrittr)
+library(haven)
+library(sjlabelled)
+library(stringr)
+employee_attrition_tbl <- read.csv("Employee_Attrition.csv")
+dept_job_role_tbl <- employee_attrition_tbl %>%
+  select(EmployeeNumber, Department, JobRole, PerformanceRating, Attrition)
+dept_job_role_tbl %>%
+  group_by(Attrition) %>%
+  summarize(n = n()) %>%
+  ungroup() %>%
+  mutate(pct = n / sum(n))
+```
+
+# Attrition by department
+```{r message=FALSE, warning=FALSE}
+
+dept_job_role_tbl %>%
+    group_by(Department, Attrition) %>%
+  summarize(n = n()) %>%
+  ungroup() %>%
+  group_by(Department) %>%
+  mutate(pct = n / sum(n))
+```
+
+# Attrition by job role
+```{r message=FALSE, warning=FALSE}
+dept_job_role_tbl %>%
+  group_by(Department, JobRole, Attrition) %>%
+  summarize(n = n()) %>%
+  ungroup() %>%
+  group_by(Department, JobRole) %>%
+  mutate(pct = n / sum(n)) %>%
+  ungroup() %>%
+  filter(Attrition %in% "Yes")
+```
+
+# Develop KPI
+```{r message=FALSE, warning=FALSE}
+dept_job_role_tbl %>%
+  group_by(Department, JobRole, Attrition) %>%
+  summarize(n = n()) %>%
+  ungroup() %>%
+  group_by(Department, JobRole) %>%
+  mutate(pct = n / sum(n)) %>%
+  ungroup() %>%
+  filter(Attrition %in% "Yes") %>%
+  arrange(desc(pct)) %>%
+  mutate(
+    above_industry_avg = case_when(
+      pct > 0.088 ~ "Yes",
+      TRUE ~ "No"))
+```
+
+# Function to calculate attrition cost
+```{r message=FALSE, warning=FALSE}
+calculate_attrition_cost <- function(
+  # Employee
+  n                    = 1,
+  salary               = 80000,
+  # Direct Costs
+  separation_cost      = 500,
+  vacancy_cost         = 10000,
+  acquisition_cost     = 4900,
+  placement_cost       = 3500,
+  # Productivity Costs
+  net_revenue_per_employee = 250000,
+  workdays_per_year        = 240,
+  workdays_position_open   = 40,
+  workdays_onboarding      = 60,
+  onboarding_efficiency    = 0.50) {
+  # Direct Costs
+  direct_cost <- sum(separation_cost, vacancy_cost, acquisition_cost, placement_cost)
+  # Lost Productivity Costs
+  productivity_cost <- net_revenue_per_employee / workdays_per_year *
+    (workdays_position_open + workdays_onboarding * onboarding_efficiency)
+  # Savings of Salary & Benefits (Cost Reduction)
+  salary_benefit_reduction <- salary / workdays_per_year * workdays_position_open
+  # Estimated Turnover Per Employee
+  cost_per_employee <- direct_cost + productivity_cost - salary_benefit_reduction
+  # Total Cost of Employee Turnover
+  total_cost <- n * cost_per_employee
+  return(total_cost)}
+```
+
+# Function to convert counts to percentages.
+```{r message=FALSE, warning=FALSE}
+dept_job_role_tbl %>%
+  count(Department, JobRole, Attrition)
+count_to_pct <- function(data, ..., col = n) {
+  grouping_vars_expr <- quos(...)
+  col_expr <- enquo(col)
+  ret <- data %>%
+    group_by(!!! grouping_vars_expr) %>%
+    mutate(pct = (!! col_expr) / sum(!! col_expr)) %>%
+    ungroup()
+  return(ret)}
+dept_job_role_tbl %>%
+  count(JobRole, Attrition) %>%
+  count_to_pct(JobRole)
+dept_job_role_tbl %>%
+  count(Department, JobRole, Attrition) %>%
+  count_to_pct(Department, JobRole) 
+```
+
+# Assess Attrition Function
+```{r message=FALSE, warning=FALSE}
+assess_attrition <- function(data, attrition_col, attrition_value, baseline_pct) {
+  attrition_col_expr <- enquo(attrition_col)
+  data %>%
+    filter((!! attrition_col_expr) %in% attrition_value) %>%
+    arrange(desc(pct)) %>%
+    mutate(above_industry_avg = case_when(
+        pct > baseline_pct ~ "Yes",
+        TRUE ~ "No"))}
+```
+
+# Visualization
+```{r message=FALSE, warning=FALSE}
+dept_job_role_tbl %>%
+  count(Department, JobRole, Attrition) %>%
+  count_to_pct(Department, JobRole) %>%
+  assess_attrition(Attrition, attrition_value = "Yes", baseline_pct = 0.088) %>%
+  mutate(
+    cost_of_attrition = calculate_attrition_cost(n = n, salary = 80000)) %>%
+  mutate(name = str_c(Department, JobRole, sep = ": ") %>% as_factor()) %>%
+  mutate(name      = fct_reorder(name, cost_of_attrition)) %>%
+  mutate(cost_text = str_c("$", format(cost_of_attrition / 1e6, digits = 2),
+                           "M", sep = "")) %>%
+  ggplot(aes(cost_of_attrition, y = name)) +
+  geom_segment(aes(xend = 0, yend = name),    color = "#2dc6d6") +
+  geom_point(  aes(size = cost_of_attrition), color = "#2dc6d6") +
+  scale_x_continuous(labels = scales::dollar) +
+  geom_label(aes(label = cost_text, size = cost_of_attrition),
+             hjust = "inward", color = "#2dc6d6") +
+  scale_size(range = c(3, 5)) +
+  labs(title = "Estimated cost of Attrition: By Dept and Job Role",
+       y = "", x = "Cost of attrition") +
+  theme(legend.position = "none")
+```
+
+```{r message=FALSE, warning=FALSE}
+# Descriptive Features
+employee_attrition_tbl %>% select(Age, DistanceFromHome, Gender, MaritalStatus, NumCompaniesWorked, Over18)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Employment Features
+employee_attrition_tbl %>% select(Department, EmployeeCount, EmployeeNumber, JobInvolvement, JobLevel, JobRole, JobSatisfaction)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Compensation Features
+employee_attrition_tbl %>% select(DailyRate, HourlyRate, MonthlyIncome, MonthlyRate, PercentSalaryHike, StockOptionLevel)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Survery Results
+employee_attrition_tbl %>% select(EnvironmentSatisfaction, JobSatisfaction, RelationshipSatisfaction, WorkLifeBalance)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Performance Data
+employee_attrition_tbl %>% select(JobInvolvement, PerformanceRating)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Work-Life Features
+employee_attrition_tbl %>% select(BusinessTravel, OverTime)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Training & Education
+employee_attrition_tbl %>% select(Education, EducationField, TrainingTimesLastYear)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Time-Based Features
+employee_attrition_tbl %>% select(TotalWorkingYears, YearsAtCompany, YearsInCurrentRole, YearsSinceLastPromotion, YearsWithCurrManager)
+```
+
+```{r message=FALSE, warning=FALSE}
+library(GGally)
+employee_attrition_tbl %>%
+  select(Attrition,  Gender, MaritalStatus, NumCompaniesWorked, Over18, DistanceFromHome) %>%
+  ggpairs()
+```
+# Explore Features by Category
+```{r message=FALSE, warning=FALSE}
+plot_ggpairs <- function(data, color = NULL, density_alpha = 0.5) {
+  color_expr <- enquo(color)
+  if (rlang::quo_is_null(color_expr)) {
+    g <- data %>%
+      ggpairs(lower = "blank") 
+    } else {
+    color_name <- quo_name(color_expr)
+    g <- data %>%
+      ggpairs(mapping = aes_string(color = color_name), 
+              lower = "blank", legend = 1,
+              diag = list(continuous = wrap("densityDiag", 
+                                            alpha = density_alpha))) +
+      theme(legend.position = "bottom")}
+  return(g)}
+```
+#   Challanges
+
+###    Descriptive features: age, gender, marital status 
+```{r message=FALSE, warning=FALSE}
+employee_attrition_tbl %>%
+  select(Attrition, Gender, MaritalStatus, NumCompaniesWorked, Over18, DistanceFromHome) %>%
+  plot_ggpairs(Attrition)
+```
+
+###   Employment features: department, job role, job level
+```{r message=FALSE, warning=FALSE}
+employee_attrition_tbl %>%
+  select(Attrition, contains("employee"), contains("department"), contains("job")) %>%
+  plot_ggpairs(Attrition)
+```
+###   Compensation features: HourlyRate, MonthlyIncome, StockOptionLevel
+```{r message=FALSE, warning=FALSE}
+employee_attrition_tbl %>%
+  select(Attrition, contains("income"), contains("rate"), contains("salary"), contains("stock")) %>%
+  plot_ggpairs(Attrition)
+```
+**Question 1**: What can you deduce about the interaction between Monthly Income and Attrition?
+
+*Answer*: Those that are leaving have a lower Monthly Income
+
+**Question 2**:What can you deduce about the interaction between Percent Salary Hike and Attrition?
+
+*Answer*: It's difficult to deduce anything based on the visualization
+
+**Question 3**:What can you deduce about the interaction between Stock Option Level and Attrition?
+
+*Answer*: Those that are staying have a higher stock option level
+
+###   Survey Results: Satisfaction level, Work Life Balance
+```{r message=FALSE, warning=FALSE}
+employee_attrition_tbl %>%
+  select(Attrition, contains("satisfaction"), contains("life")) %>%
+  plot_ggpairs(Attrition)
+```
+**Question 4**: What can you deduce about the interaction between Environment Satisfaction and Attrition?
+
+*Answer*: A higher proportion of those leaving have a low environment satisfaction level
+
+**Question 5**:What can you deduce about the interaction between Work Life Balance and Attrition.
+
+*Answer*: Those that are staying have a higher density of 2's and 3's
+
+###   Performance Data: Job Involvement, Performance Rating
+```{r message=FALSE, warning=FALSE}
+employee_attrition_tbl %>%
+  select(Attrition, contains("performance"), contains("involvement")) %>%
+  plot_ggpairs(Attrition)
+```
+**Question 6**: What Can you deduce about the interaction between Job Involvement and Attrition?
+
+*Answer*: Those that are leaving have a lower density of 3's and 4's
+
+###   Work-Life Features 
+```{r message=FALSE, warning=FALSE}
+employee_attrition_tbl %>%
+  select(Attrition, contains("overtime"), contains("travel")) %>%
+  plot_ggpairs(Attrition)
+```
+**Question 7**: What can you deduce about the interaction between Over Time and Attrition?
+
+*Answer*: The proportion of those staying that are working Over Time are high compared to those that are not staying
+
+###   Training and Education
+```{r message=FALSE, warning=FALSE}
+employee_attrition_tbl %>%
+  select(Attrition, contains("training"), contains("education")) %>%
+  plot_ggpairs(Attrition)
+```
+**Question 8**: What can you deduce about the interaction between Training Times Last Year and Attrition.
+
+*Answer*: People that leave tend to have less annual training
+
+###   Time-Based Features: Years at company, years in current role
+```{r message=FALSE, warning=FALSE}
+employee_attrition_tbl %>%
+  select(Attrition, contains("years")) %>%
+  plot_ggpairs(Attrition)
+```
+**Question 9**: What can you deduce about the interaction between Years At Company and Attrition.
+
+*Answer*: People that leave tend to have less working years at the company
+
+**Question 10**: What can you deduce about the interaction between Years Since Last Promotion and Attrition?
+
+*Answer*: It's difficult to deduce anything based on the visualization
+
