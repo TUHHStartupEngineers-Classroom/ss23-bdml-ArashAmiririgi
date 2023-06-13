@@ -3,6 +3,106 @@ title: "Automated Machine Learning with H20 (II)"
 author: "Arash Amiririgi"
 ---
 
-::: callout-note
-You can delete everything in here and start fresh.
-:::
+**Challenge:**
+The goal here is to predict whether or not a product will be put on backorder status, given a number of product metrics such as current inventory, transit time, demand forecasts and prior sales. It’s a classic Binary Classification problem.
+
+
+*Code:*
+
+### Loading libraries
+```{r message=FALSE, warning=FALSE}
+library(tidymodels)
+library(magrittr)
+library(dplyr)
+library(sjmisc)
+library(magrittr)
+library(haven)
+library(sjlabelled)
+library(rsample)
+library(recipes)
+library(rstanarm)
+library(broom.mixed)
+library(h2o)
+```
+
+
+### Loading the training & test dataset
+```{r message=FALSE, warning=FALSE}
+product_backorders_tbl <- read.csv("product_backorders.csv")
+split_obj <- initial_split(product_backorders_tbl, prop = 0.8)
+train_readable_tbl <- training(split_obj)
+test_readable_tbl  <- testing(split_obj)
+```
+
+### Specifying the response and predictor variables
+```{r message=FALSE, warning=FALSE}
+factor_name <- "went_on_backorder"
+recipe_obj <- 
+  recipe(went_on_backorder ~ ., data = train_readable_tbl) %>%
+  step_zv(all_predictors()) %>%
+  step_mutate_at(factor_name, fn = as.factor) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>% 
+  prep()
+train_tbl <- bake(recipe_obj, new_data = train_readable_tbl)
+test_tbl  <- bake(recipe_obj, new_data = test_readable_tbl)
+
+h2o.init()
+split_h2o <- h2o.splitFrame(as.h2o(train_tbl), ratios = c(0.8), seed = 1234)
+train_h2o <- split_h2o[[1]]
+valid_h2o <- split_h2o[[2]]
+test_h2o  <- as.h2o(test_tbl)
+y <- "went_on_backorder"
+x <- setdiff(names(train_h2o), y)
+```
+
+### running AutoML specifying the stopping criterion
+```{r message=FALSE, warning=FALSE}
+automl_models_h2o <- h2o.automl(
+  x = x,
+  y = y,
+  training_frame    = train_h2o,
+  validation_frame  = valid_h2o,
+  leaderboard_frame = test_h2o,
+  max_runtime_secs  = 60,
+  nfolds            = 5)
+```
+
+### View the leaderboard
+```{r message=FALSE, warning=FALSE}
+typeof(automl_models_h2o)
+slotNames(automl_models_h2o)
+automl_models_h2o@leaderboard 
+automl_models_h2o@leader
+
+extract_h2o_model_name_by_position <- function(h2o_leaderboard,
+                                                n= 1, verbose = T){
+   model_name <- h2o_leaderboard %>%
+     as_tibble() %>%
+     slice(n) %>%
+     pull(model_id)
+   if (verbose) message(model_name)
+   return(model_name)}
+automl_models_h2o@leaderboard %>% 
+  extract_h2o_model_name_by_position(6) %>% 
+  h2o.getModel()
+```
+
+### Predicting using Leader Model
+```{r message=FALSE, warning=FALSE}
+stacked_ensemble_h2o <- automl_models_h2o@leaderboard %>% 
+  extract_h2o_model_name_by_position(6) %>% 
+  h2o.getModel()
+
+predictions <- h2o.predict(stacked_ensemble_h2o, newdata = as.h2o(test_tbl))
+typeof(predictions)
+predictions_tbl <- predictions %>% as_tibble()
+predictions_tbl
+```
+
+### Save the leader model
+```{r message=FALSE, warning=FALSE}
+automl_models_h2o@leaderboard %>% 
+  extract_h2o_model_name_by_position(6) %>% 
+  h2o.getModel() %>%
+  h2o.saveModel(path = "C:\\Users\\arash\\Documents\\GitHub\\ss23-bdml-ArashAmiririgi\\content\\01_journal\\04_Modeling")
+```
