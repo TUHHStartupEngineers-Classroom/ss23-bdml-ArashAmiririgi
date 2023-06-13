@@ -10,8 +10,8 @@ Our goal is to figure out what gaps exist in the products and come up with a pri
 
 *Code:*
 
-```{r message=FALSE, warning=FALS}
-# load libraries
+### loading libraries
+```{r message=FALSE, warning=FALSE}
 library(tidyverse)
 library(parsnip)
 library(tidymodels)
@@ -23,8 +23,8 @@ library(yardstick)
 library(rpart.plot)
 ```
 
-```{r message=FALSE, warning=FALS}
-# Build the model
+### Building the model
+```{r message=FALSE, warning=FALSE}
 bike_orderlines_tbl <- readRDS("bike_orderlines.rds")
 model_sales_tbl <- bike_orderlines_tbl %>%
   select(total_price, model, category_2, frame_material) %>%
@@ -88,17 +88,15 @@ train_tbl <- train_tbl %>% set_names(str_replace_all(names(train_tbl), " |-", "_
 test_tbl  <- test_tbl  %>% set_names(str_replace_all(names(test_tbl), " |-", "_"))
 ```
 
-
-```{r message=FALSE, warning=FALS}
-# Create features with the recipes package
+### Createing features with the recipes package
+```{r message=FALSE, warning=FALSE}
 bike_rec <- recipe(frame_material ~ ., data = train_tbl) %>% 
   step_dummy(all_nominal(), -all_outcomes()) %>% 
   step_zv(all_predictors()) 
 ```
 
-
-```{r message=FALSE, warning=FALS}
-# Bundle the model and recipe with the workflow package
+### Bundling the model and recipe with the workflow package
+```{r message=FALSE, warning=FALSE}
 lr_mod <- logistic_reg() %>% set_engine("glm")
 bike_wflow <- workflow() %>%add_model(lr_mod) %>% add_recipe(bike_rec)
 bike_fit <- bike_wflow %>% fit(data = train_tbl)
@@ -116,15 +114,12 @@ roc_car <- bike_predict %>% roc_auc(truth = frame_material, .pred_carbon)
 
 ```
 
-
-```{r message=FALSE, warning=FALS}
-# Evaluate your model with the yardstick package
+### Evaluating the model with the yardstick package
+```{r message=FALSE, warning=FALSE}
 model_01_linear_lm_simple <- linear_reg(mode = "regression") %>%
   set_engine("lm") %>%
   fit(price ~ category_2 + frame_material, data = train_tbl)
-model_01_linear_lm_simple
-
-test_tbl <- test_tbl %>% filter(category_2 != "Fat Bikes")
+#test_tbl <- test_tbl %>% filter(category_2 != "Fat Bikes")
 
 model_01_linear_lm_simple %>%
   predict(new_data = test_tbl) %>%
