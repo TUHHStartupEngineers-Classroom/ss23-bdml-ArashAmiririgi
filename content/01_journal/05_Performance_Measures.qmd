@@ -3,6 +3,160 @@ title: "Performance Measures"
 author: "Arash Amiririgi"
 ---
 
-::: callout-note
-You can delete everything in here and start fresh.
-:::
+**Challenge:**
+The goal here is to predict whether or not a product will be put on backorder status, given a number of product metrics such as current inventory, transit time, demand forecasts and prior sales. It’s a classic Binary Classification problem.
+
+*Code:*
+
+### Preparing the model based previous chapter
+```{r message=FALSE, warning=FALSE}
+# Loading libraries
+library(tidymodels)
+library(magrittr)
+library(dplyr)
+library(sjmisc)
+library(magrittr)
+library(haven)
+library(sjlabelled)
+library(rsample)
+library(recipes)
+library(rstanarm)
+library(broom.mixed)
+library(h2o)
+
+# Loading the training & test dataset
+product_backorders_tbl <- read.csv("product_backorders.csv")
+split_obj <- initial_split(product_backorders_tbl, prop = 0.8)
+train_readable_tbl <- training(split_obj)
+test_readable_tbl  <- testing(split_obj)
+
+# Specifying the response and predictor variables
+factor_name <- "went_on_backorder"
+recipe_obj <- 
+  recipe(went_on_backorder ~ ., data = train_readable_tbl) %>%
+  step_zv(all_predictors()) %>%
+  step_mutate_at(factor_name, fn = as.factor) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>% 
+  prep()
+train_tbl <- bake(recipe_obj, new_data = train_readable_tbl)
+test_tbl  <- bake(recipe_obj, new_data = test_readable_tbl)
+
+h2o.init()
+split_h2o <- h2o.splitFrame(as.h2o(train_tbl), ratios = c(0.8), seed = 1234)
+train_h2o <- split_h2o[[1]]
+valid_h2o <- split_h2o[[2]]
+test_h2o  <- as.h2o(test_tbl)
+y <- "went_on_backorder"
+x <- setdiff(names(train_h2o), y)
+
+# running AutoML specifying the stopping criterion
+automl_models_h2o <- h2o.automl(
+  x = x,
+  y = y,
+  training_frame    = train_h2o,
+  validation_frame  = valid_h2o,
+  leaderboard_frame = test_h2o,
+  max_runtime_secs  = 60,
+  nfolds            = 5)
+
+# View the leaderboard
+typeof(automl_models_h2o)
+slotNames(automl_models_h2o)
+automl_models_h2o@leaderboard 
+automl_models_h2o@leader
+```
+
+### Leaderboard vizualization
+
+```{r}
+automl_models_h2o@leaderboard %>% 
+              as_tibble() %>% 
+              select(-c(mean_per_class_error, rmse, mse))
+```
+
+
+```{r message=FALSE, warning=FALSE}
+plot_h2o_leaderboard <- function(h2o_leaderboard, order_by = c("auc", "logloss"), 
+                                 n_max = 20, size = 4, include_lbl = TRUE) {
+    order_by <- tolower(order_by[[1]])
+    leaderboard_tbl <- h2o_leaderboard %>%
+        as.tibble() %>%
+        select(-c(aucpr, mean_per_class_error, rmse, mse)) %>% 
+        mutate(model_type = str_extract(model_id, "[^_]+")) %>%
+        rownames_to_column(var = "rowname") %>%
+        mutate(model_id = paste0(rowname, ". ", model_id) %>% as.factor())
+    if (order_by == "auc") {
+        data_transformed_tbl <- leaderboard_tbl %>%
+            slice(1:n_max) %>%
+            mutate(
+                model_id   = as_factor(model_id) %>% reorder(auc),
+                model_type = as.factor(model_type)) %>%
+                pivot_longer(cols = -c(model_id, model_type, rowname), 
+                       names_to = "key", 
+                       values_to = "value", 
+                       names_transform = list(key = forcats::fct_inorder))
+    } else if (order_by == "logloss") {
+        data_transformed_tbl <- leaderboard_tbl %>%
+            slice(1:n_max) %>%
+            mutate(
+                model_id   = as_factor(model_id) %>% reorder(logloss) %>% fct_rev(),
+                model_type = as.factor(model_type)
+            ) %>%
+            pivot_longer(cols = -c(model_id, model_type, rowname), 
+                       names_to = "key", 
+                       values_to = "value", 
+                       names_transform = list(key = forcats::fct_inorder))
+    } else {
+        stop(paste0("order_by = '", order_by, "' is not a permitted option."))
+    }
+    g <- data_transformed_tbl %>%
+        ggplot(aes(value, model_id, color = model_type)) +
+        geom_point(size = size) +
+        facet_wrap(~ key, scales = "free_x") +
+        labs(title = "Leaderboard Metrics",
+             subtitle = paste0("Ordered by: ", toupper(order_by)),
+             y = "Model Postion, Model ID", x = "")
+
+    if (include_lbl) g <- g + geom_label(aes(label = round(value, 2), 
+                                             hjust = "inward"))
+
+    return(g)
+}
+
+plot_h2o_leaderboard(automl_models_h2o@leaderboard)
+```
+
+### Tune a model with grid search
+```{r message=FALSE, warning=FALSE}
+
+```
+
+### Visualize the trade of between the precision and the recall and the optimal threshold
+```{r message=FALSE, warning=FALSE}
+
+```
+
+### ROC Plot
+```{r message=FALSE, warning=FALSE}
+
+```
+
+### Precision vs Recall Plot
+```{r message=FALSE, warning=FALSE}
+
+```
+
+### Gain Plot
+```{r message=FALSE, warning=FALSE}
+
+```
+
+### Lift Plot
+```{r message=FALSE, warning=FALSE}
+
+```
+
+### Dashboard with cowplot
+```{r message=FALSE, warning=FALSE}
+
+```
