@@ -14,6 +14,7 @@ library(h2o)
 library(recipes)
 library(readxl)
 library(tidyverse)
+library(tidymodels)
 library(tidyquant)
 library(lime)
 ```
@@ -33,7 +34,7 @@ employee_attrition_readable_tbl <- process_hr_data_readable(employee_attrition_t
 
 ### Assign training and test data
 ```{r message=FALSE, warning=FALSE}
-set.seed(seed = 1113)
+# set.seed(seed = 1113)
 split_obj <- rsample::initial_split(employee_attrition_readable_tbl, prop = 0.85)
 train_readable_tbl <- training(split_obj)
 test_readable_tbl  <- testing(split_obj)
@@ -49,26 +50,126 @@ test_tbl  <- bake(recipe_obj, new_data = test_readable_tbl)
 ### Models
 ```{r message=FALSE, warning=FALSE}
 h2o.init()
+split_h2o <- h2o.splitFrame(as.h2o(train_tbl), ratios = c(0.85))
+train_h2o <- split_h2o[[1]]
+valid_h2o <- split_h2o[[2]]
+test_h2o  <- as.h2o(test_tbl)
+y <- "Attrition"
+x <- setdiff(names(train_h2o), y)
 
-automl_leader <- h2o.loadModel("")
-automl_leader
+automl_models_h2o <- h2o.automl(
+  x = x,
+  y = y,
+  training_frame    = train_h2o,
+  validation_frame  = valid_h2o,
+  leaderboard_frame = test_h2o,
+  max_runtime_secs  = 30,
+  nfolds            = 5)
+
+models <- automl_models_h2o@leaderboard %>% as_tibble()
+models
+
+extract_h2o_model_name_by_position <- function(h2o_leaderboard,
+                                                n= 1, verbose = T){
+   model_name <- h2o_leaderboard %>%
+     as_tibble() %>%
+     slice(n) %>%
+     pull(model_id)
+   if (verbose) message(model_name)
+   return(model_name)}
+
+# StackedEnsemble_BestOfFamily_1_AutoML_5_20230615_90739
+automl_leader <- automl_models_h2o@leaderboard %>% 
+  extract_h2o_model_name_by_position(4) %>% 
+  h2o.getModel()
 ```
 
 
-
+### Predictoin
 ```{r message=FALSE, warning=FALSE}
-
+predictions_tbl <- automl_leader %>% 
+    h2o.predict(newdata = as.h2o(test_tbl)) %>%
+    as.tibble() %>%
+    bind_cols(test_tbl %>%
+                select(Attrition, EmployeeNumber))
+predictions_tbl
 ```
 
-
+### Lime for single explanation
 ```{r message=FALSE, warning=FALSE}
+explainer <- train_tbl %>%
+    select(-Attrition) %>%
+    lime(
+        model           = automl_leader,
+        bin_continuous  = TRUE,
+        n_bins          = 4,
+        quantile_bins   = TRUE)
+
+explanation <- test_tbl %>%
+    slice(1) %>%
+    select(-Attrition) %>%
+    lime::explain(
+        explainer = explainer,
+        n_labels   = 1,
+        n_features = 20,
+        n_permutations = 5000,
+        kernel_width   = 1)
+
+explanation %>% as.tibble()
+g1 <- plot_features(explanation = explanation, ncol = 1)
+g1
+
+explanation_df <- as.data.frame(explanation)
+exp_tibble <- explanation_df[, c("feature", "feature_weight")]
+exp_tibble <- exp_tibble[order(exp_tibble$feature_weight), ]
+exp_tibble$Support <- ifelse(exp_tibble$feature_weight > 0, "Supports", "Contradicts")
+explained_employee <- test_tbl$EmployeeNumber[1]
+features <- test_tbl[1, ] %>% as_tibble()
+features_df <- as.data.frame(features)
+
+for(i in 1:nrow(explanation_df)){
+  feature_name <- explanation_df$feature[i]
+  feature_value <- features_df[[feature_name]]
+  explanation_df$feature[i] <- paste(feature_name, "=", feature_value)}
+
+ggplot(data = exp_tibble, aes(x = reorder(feature, feature_weight), y = feature_weight, fill = Support)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_manual(values = c("Supports" = "darkturquoise", "Contradicts" = "gray")) +
+  labs(x = "Features", y = "Weight", title = "Feature Importance") +
+  theme_minimal()
 
 ```
 
+### Visualizing Feature Importance For Multiple Explanations
+```{r message=FALSE, warning=FALSE}
+explanation <- test_tbl %>%
+    slice(1:20) %>%
+    select(-Attrition) %>%
+    lime::explain(
+        explainer = explainer,
+        n_labels   = 1,
+        n_features = 8,
+        n_permutations = 5000,
+        kernel_width   = 0.5)
 
+explanation %>% as.tibble()
+g2 <- plot_explanations(explanation)
+g2
 
+explanation %>% ggplot(aes_(~(case), ~feature_desc)) +
+  geom_tile(aes_(fill = ~feature_weight)) +
+  scale_x_discrete("Case", expand = c(0, 0)) +
+  scale_y_discrete("Feature", expand = c(0, 0)) +
+  scale_fill_gradient2("Feature\nweight", low = "firebrick", mid = "white", high = "steelblue") +
+  theme(panel.border = element_rect(fill = NA,
+                                    size = 1),
+        panel.grid = element_blank(),
+        legend.position = "right",
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+  facet_wrap(~label) + theme_light() + theme(panel.grid.major = element_blank())
 
-
+```
 
 
 
